@@ -5,6 +5,7 @@ Editor visuale in italiano per automi a stati finiti deterministici. Applicazion
 ## Funzioni
 
 - Creazione, modifica e trascinamento di stati e transizioni.
+- Output facoltativi su stati e archi; etichette degli archi `nome / output` (`—` se vuoto). Il simulatore emette l’output dello stato iniziale all’avvio, quello dell’arco al passaggio e quello dello stato di destinazione all’ingresso. Output inclusi in JSON e PNG; modelli precedenti senza output compatibili.
 - Colori e tratteggi per distinguere gli archi, anche nel PNG; archi paralleli separati.
 - Textbox sul grafo alla creazione e al doppio clic su nodi e archi; Invio conferma, Esc annulla.
 - Scorciatoie S (nuovo stato), C (collega due nodi), Ctrl+Z / Cmd+Z (annulla) e Ctrl+Shift+Z / Cmd+Shift+Z (ripeti). Le scorciatoie del grafo non interferiscono con la digitazione nelle textbox.

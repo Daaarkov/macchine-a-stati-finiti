@@ -2,8 +2,8 @@
 const $=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let model,selected=null,mode='select',connectFrom=null,history=[],future=[],timer=null,drag=null,inlineEditor=null;
-let sim={current:null,index:0,tokens:[],trace:[],blocked:false,started:false};
-const state=(id,name,x,y,final=false)=>({id,name,x,y,final});
+let sim={current:null,index:0,tokens:[],trace:[],outputs:[],blocked:false,started:false};
+const state=(id,name,x,y,final=false)=>({id,name,x,y,final,output:''});
 function example(type){
  if(type==='empty')return {title:'Il mio automa',initial:'q0',states:[state('q0','q0',250,300)],edges:[]};
  if(type==='traffic')return {title:'Semaforo',initial:'r',states:[state('r','Rosso',240,300),state('g','Verde',500,300),state('y','Giallo',760,300)],edges:[{id:'e1',from:'r',to:'g',symbol:'timer'},{id:'e2',from:'g',to:'y',symbol:'timer'},{id:'e3',from:'y',to:'r',symbol:'timer'}]};
@@ -13,14 +13,17 @@ function example(type){
  return {title:'Distributore di bevande',initial:'start',states,edges};
 }
 function validViewport(v){return v&&['x','y','w','h'].every(k=>Number.isFinite(v[k])&&Math.abs(v[k])<=1e9)&&v.w>0&&v.h>0;}
-function validModel(m){return m&&(m.viewport===undefined||validViewport(m.viewport))&&typeof m.title==='string'&&m.title.length<=80&&Array.isArray(m.states)&&m.states.length>0&&m.states.length<=100&&Array.isArray(m.edges)&&m.edges.length<=500&&m.states.every(s=>typeof s.id==='string'&&typeof s.name==='string'&&s.name.length>0&&s.name.length<=40&&Number.isFinite(s.x)&&Number.isFinite(s.y)&&typeof s.final==='boolean')&&new Set(m.states.map(s=>s.id)).size===m.states.length&&m.states.some(s=>s.id===m.initial)&&m.edges.every(e=>typeof e.id==='string'&&m.states.some(s=>s.id===e.from)&&m.states.some(s=>s.id===e.to)&&typeof e.symbol==='string'&&e.symbol.trim()&&e.symbol.length<=40&&!/[\s,]/.test(e.symbol))&&new Set(m.edges.map(e=>e.id)).size===m.edges.length;}
+function validOutput(value){return value===undefined||typeof value==='string'&&value.length<=40;}
+function outputOf(item){return item?.output||'';}
+function edgeLabel(edge){return edge.symbol+' / '+(outputOf(edge)||'—');}
+function validModel(m){return m&&(m.viewport===undefined||validViewport(m.viewport))&&typeof m.title==='string'&&m.title.length<=80&&Array.isArray(m.states)&&m.states.length>0&&m.states.length<=100&&Array.isArray(m.edges)&&m.edges.length<=500&&m.states.every(s=>typeof s.id==='string'&&typeof s.name==='string'&&s.name.length>0&&s.name.length<=40&&Number.isFinite(s.x)&&Number.isFinite(s.y)&&typeof s.final==='boolean'&&validOutput(s.output))&&new Set(m.states.map(s=>s.id)).size===m.states.length&&m.states.some(s=>s.id===m.initial)&&m.edges.every(e=>typeof e.id==='string'&&m.states.some(s=>s.id===e.from)&&m.states.some(s=>s.id===e.to)&&validOutput(e.output)&&typeof e.symbol==='string'&&e.symbol.trim()&&e.symbol.length<=40&&!/[\s,]/.test(e.symbol))&&new Set(m.edges.map(e=>e.id)).size===m.edges.length;}
 try{const saved=JSON.parse(localStorage.getItem('automata-studio-v1'));model=validModel(saved)?saved:example('vending');}catch{model=example('vending');}
 function clone(){return JSON.stringify(model)}
 function checkpoint(){history.push(clone());if(history.length>60)history.shift();future=[];stop();}
 function save(){try{localStorage.setItem('automata-studio-v1',clone());$('saved').textContent='Salvato in questo browser';}catch{$('saved').textContent='Salvataggio locale non disponibile';}}
 function toast(t){$('toast').textContent=t;$('toast').style.display='block';clearTimeout(toast.timeout);toast.timeout=setTimeout(()=>$('toast').style.display='none',3500);}
 function stop(){if(timer)clearInterval(timer);timer=null;$('run').textContent='▶ Esegui';}
-function reset(render=true){stop();sim={current:model.initial,index:0,tokens:parse(),trace:[],blocked:false,started:false};if(render)renderAll();}
+function reset(render=true){stop();sim={current:model.initial,index:0,tokens:parse(),trace:[],outputs:[],blocked:false,started:false};if(render)renderAll();}
 function parse(){return $('sequence').value.trim().split(/[\s,]+/).filter(Boolean)}
 function commit(){if(validViewport(model.viewport))setView(model.viewport,false);save();reset(false);renderAll();}
 function symbols(){return [...new Set(model.edges.map(e=>e.symbol))].sort()}
@@ -50,14 +53,15 @@ function draw(target=$('graph'),exporting=false){
  if(!reverse&&Math.abs(dx)>300){cy-=70;}
  let startAngle=Math.atan2(cy-a.y,cx-a.x),endAngle=Math.atan2(b.y-cy,b.x-cx);d=`M ${a.x+Math.cos(startAngle)*40} ${a.y+Math.sin(startAngle)*40} Q ${cx} ${cy} ${b.x-Math.cos(endAngle)*45} ${b.y-Math.sin(endAngle)*45}`;lx=.25*a.x+.5*cx+.25*b.x;ly=.25*a.y+.5*cy+.25*b.y-9;}
  let sel=selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id),group=node('g',{'class':'graph-edge','data-edges':JSON.stringify(g.edges.map(e=>e.id)),'data-label-x':lx,'data-label-y':ly},target);node('path',{d,fill:'none',stroke:route.color,'stroke-dasharray':route.dash,'stroke-width':sel&&!exporting?3.5:2.2,'marker-end':'url(#'+route.marker+')'},group);node('path',{d,fill:'none',stroke:'transparent','stroke-width':18},group);
- let label=g.edges.map(e=>e.symbol).join(', '),width=label.length*7+14;node('rect',{x:lx-width/2,y:ly-14,width,height:21,rx:5,fill:'#fcfdf9',stroke:'#e3e9df'},group);let text=node('text',{x:lx,y:ly+1,'text-anchor':'middle','font-size':12,'font-family':'Arial,sans-serif',fill:route.color},group);text.textContent=label;
+ let label=g.edges.map(edgeLabel).join(', '),width=label.length*7+14;node('rect',{x:lx-width/2,y:ly-14,width,height:21,rx:5,fill:'#fcfdf9',stroke:'#e3e9df'},group);let text=node('text',{x:lx,y:ly+1,'text-anchor':'middle','font-size':12,'font-family':'Arial,sans-serif',fill:route.color},group);text.textContent=label;
  if(!exporting){group.addEventListener('click',()=>{selected={kind:'edge',id:selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id)?selected.id:g.edges[0].id};renderAll(false)});group.addEventListener('dblclick',event=>{event.stopPropagation();editLabel('edge',selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id)?selected.id:g.edges[0].id)});}}
  for(let s of model.states){let active=!exporting&&mode!=='connect'&&sim.started&&sim.current===s.id,sel=!exporting&&mode==='select'&&selected?.kind==='state'&&selected.id===s.id,group=node('g',{'class':'graph-state','data-id':s.id,role:'button',tabindex:exporting?-1:0,'aria-label':s.name},target);
  if(s.id===model.initial){node('path',{d:`M ${s.x-87} ${s.y} L ${s.x-44} ${s.y}`,stroke:'#829a83','stroke-width':2,'marker-end':'url(#arrow)'},group);let text=node('text',{x:s.x-82,y:s.y-11,'font-size':9,'font-family':'Arial,sans-serif',fill:'#829a83'},group);text.textContent='inizio'}
  if(active)node('circle',{cx:s.x,cy:s.y,r:48,fill:active?'#fff2d8':'#e9f0e4',stroke:active?'#e8d0a1':'#c4d6bd','stroke-width':1},group);
  if(!exporting&&mode==='connect'&&connectFrom===s.id)node('circle',{'data-connection-source':'true',cx:s.x,cy:s.y,r:45,fill:'none',stroke:'#237658','stroke-width':2},group);
  node('circle',{cx:s.x,cy:s.y,r:39,fill:active?'#f4dfb4':s.final?'#e0ecda':'#f2f6ee',stroke:active?'#c8994d':'#6c8c73','stroke-width':2},group);if(s.final)node('circle',{cx:s.x,cy:s.y,r:33,fill:'none',stroke:'#6c8c73','stroke-width':1.5},group);
- let text=node('text',{x:s.x,y:s.y+5,'text-anchor':'middle','font-size':s.name.length>10?11:14,'font-family':'Arial,sans-serif','font-weight':500,fill:'#304d38'},group);text.textContent=s.name.length>17?s.name.slice(0,16)+'…':s.name;node('title',{},group).textContent=s.name;
+ let text=node('text',{x:s.x,y:s.y+(outputOf(s)?-5:5),'text-anchor':'middle','font-size':s.name.length>10?11:14,'font-family':'Arial,sans-serif','font-weight':500,fill:'#304d38'},group);text.textContent=s.name.length>17?s.name.slice(0,16)+'…':s.name;if(outputOf(s)){node('path',{d:`M ${s.x-25} ${s.y+3} L ${s.x+25} ${s.y+3}`,stroke:'#b5c5b5','stroke-width':1},group);const out=node('text',{x:s.x,y:s.y+20,'text-anchor':'middle','font-size':11,'font-family':'Arial,sans-serif',fill:'#59735f'},group);out.textContent=outputOf(s).length>14?outputOf(s).slice(0,13)+'…':outputOf(s);}
+ node('title',{},group).textContent=s.name+(outputOf(s)?' / '+outputOf(s):'');
  if(!exporting){group.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();if(mode==='connect'){if(!connectFrom){connectFrom=s.id;selected={kind:'state',id:s.id};renderAll();}else{const from=connectFrom;connectFrom=null;mode='select';addEdge(from,s.id);}return;}selected={kind:'state',id:s.id};$('graph').focus();let p=point(e);drag={kind:'node',id:s.id,dx:p.x-s.x,dy:p.y-s.y,startX:e.clientX,startY:e.clientY,before:clone(),moved:false};renderAll(false)});group.addEventListener('dblclick',event=>{event.stopPropagation();editLabel('state',s.id)});group.addEventListener('keydown',e=>{if(e.key==='Enter'){selected={kind:'state',id:s.id};renderAll()}})} }
 }
 function point(e){return new DOMPoint(e.clientX,e.clientY).matrixTransform($('graph').getScreenCTM().inverse())}
@@ -103,7 +107,7 @@ function addState(x,y){
 function addEdge(from,to){
  checkpoint();let symbol='evento',i=2;
  while(model.edges.some(e=>e.from===from&&e.symbol===symbol))symbol='evento'+i++;
- const id='e'+Date.now(),used=new Set(model.edges.map(edge=>edge.styleIndex));let styleIndex=0;while(used.has(styleIndex)&&styleIndex<48)styleIndex++;model.edges.push({id,from,to,symbol,styleIndex:styleIndex%48});
+ const id='e'+Date.now(),used=new Set(model.edges.map(edge=>edge.styleIndex));let styleIndex=0;while(used.has(styleIndex)&&styleIndex<48)styleIndex++;model.edges.push({id,from,to,symbol,output:'',styleIndex:styleIndex%48});
  selected={kind:'edge',id};commit();editLabel('edge',id,true);
 }
 function beginConnection(){
@@ -121,9 +125,10 @@ function editLabel(kind,id,created=false){
  input.setAttribute('aria-label',kind==='state'?'Nome dello stato sul grafo':'Simbolo del collegamento sul grafo');
  input.value=kind==='state'?item.name:item.symbol;input.autocomplete='off';
  const help=document.createElement('small');help.textContent='Invio salva · Esc annulla';
- wrap.append(input,help);$('graph').parentElement.append(wrap);
- inlineEditor={kind,id,created,wrap,input,original:input.value};positionInlineEditor();
- input.addEventListener('keydown',event=>{
+ const output=document.createElement('input');output.id='inline-output';output.maxLength=40;output.autocomplete='off';output.placeholder='Output (facoltativo)';output.setAttribute('aria-label','Output sul grafo');output.value=outputOf(item);
+ const fields=document.createElement('div');fields.className='inline-fields';const slash=document.createElement('span');slash.textContent='/';fields.append(input,slash,output);wrap.append(fields,help);$('graph').parentElement.append(wrap);
+ inlineEditor={kind,id,created,wrap,input,output,original:input.value,originalOutput:output.value};positionInlineEditor();
+ for(const field of [input,output])field.addEventListener('keydown',event=>{
   if(event.key==='Enter'){event.preventDefault();event.stopPropagation();finishInlineEditor(true);}
   if(event.key==='Escape'){event.preventDefault();event.stopPropagation();finishInlineEditor(false);}
  });
@@ -135,20 +140,20 @@ function positionInlineEditor(){
  if(kind==='state'){const item=model.states.find(item=>item.id===id);if(!item)return;x=item.x;y=item.y;}
  else{const group=[...$('graph').querySelectorAll('.graph-edge')].find(group=>JSON.parse(group.dataset.edges).includes(id));if(!group)return;x=Number(group.dataset.labelX);y=Number(group.dataset.labelY);}
  const point=new DOMPoint(x,y).matrixTransform($('graph').getScreenCTM()),box=$('graph').parentElement.getBoundingClientRect();
- wrap.style.left=Math.max(94,Math.min(box.width-94,point.x-box.x))+'px';
+ const half=Math.min(160,box.width/2);wrap.style.left=Math.max(half,Math.min(box.width-half,point.x-box.x))+'px';
  wrap.style.top=Math.max(24,Math.min(box.height-54,point.y-box.y))+'px';
 }
 function finishInlineEditor(apply){
  if(!inlineEditor)return true;
  const editor=inlineEditor,item=(editor.kind==='state'?model.states:model.edges).find(item=>item.id===editor.id);
- const value=editor.input.value.trim();
+ const value=editor.input.value.trim(),output=editor.output.value.trim();
  if(apply&&(!value||editor.kind==='edge'&&/[\s,]/.test(value))){
   editor.input.setAttribute('aria-invalid','true');toast(editor.kind==='state'?'Inserisci un nome per lo stato':'Usa un simbolo senza spazi o virgole');editor.input.focus();return false;
  }
  inlineEditor=null;editor.wrap.remove();
- if(apply&&item&&value!==editor.original){
+ if(apply&&item&&(value!==editor.original||output!==editor.originalOutput)){
   if(!editor.created)checkpoint();
-  if(editor.kind==='state')item.name=value;else item.symbol=value;
+  if(editor.kind==='state')item.name=value;else item.symbol=value;item.output=output;
   commit();
  }
  $('graph').focus();return true;
@@ -166,11 +171,12 @@ function labelKeys(input,original){
   if(event.key==='Escape'){event.preventDefault();input.value=original;input.blur();}
  });
 }
+function bindOutput(input,item){labelKeys(input,outputOf(item));input.onchange=event=>{checkpoint();item.output=event.target.value.trim();commit();};}
 function renderProps(){let root=$('properties');let s=selected?.kind==='state'?model.states.find(s=>s.id===selected.id):null,e=selected?.kind==='edge'?model.edges.find(e=>e.id===selected.id):null;
- if(s){root.innerHTML=`<h2>Modifica stato</h2><label>Nome<input id="state-name" maxlength="40" value="${esc(s.name)}"></label><label class="check"><input id="initial" type="checkbox" ${model.initial===s.id?'checked':''}> Stato iniziale</label><label class="check"><input id="final" type="checkbox" ${s.final?'checked':''}> Stato finale</label><p class="helper">Un solo stato iniziale. Gli stati finali determinano quali sequenze sono accettate.</p><button id="delete" class="danger">Elimina stato</button>`;
- labelKeys($('state-name'),s.name);$('state-name').onchange=ev=>{let v=ev.target.value.trim();if(!v){toast('Inserisci un nome per lo stato');renderProps();return;}checkpoint();s.name=v;commit()};$('initial').onchange=()=>{if(model.initial===s.id){toast('Scegli un altro stato come iniziale');renderProps();return}checkpoint();model.initial=s.id;commit()};$('final').onchange=ev=>{checkpoint();s.final=ev.target.checked;commit()};$('delete').onclick=deleteSelectedState;
- }else if(e){const opts=id=>model.states.map(s=>`<option value="${esc(s.id)}" ${s.id===id?'selected':''}>${esc(s.name)}</option>`).join('');root.innerHTML=`<h2>Modifica transizione</h2><label>Da<select id="edge-from">${opts(e.from)}</select></label><label>A<select id="edge-to">${opts(e.to)}</select></label><label>Simbolo<input id="edge-symbol" maxlength="40" value="${esc(e.symbol)}"></label><p class="helper">Un simbolo per transizione, senza spazi o virgole. Per più simboli, aggiungi più transizioni.</p><button id="delete" class="danger">Elimina transizione</button>`;
- labelKeys($('edge-symbol'),e.symbol);for(let key of ['from','to','symbol'])$('edge-'+key).onchange=ev=>{let v=ev.target.value.trim();if(key==='symbol'&&(!v||/[\s,]/.test(v))){toast('Usa un simbolo senza spazi o virgole');renderProps();return;}checkpoint();e[key]=v;commit()};$('delete').onclick=()=>{checkpoint();model.edges=model.edges.filter(x=>x.id!==e.id);selected=null;commit()};
+ if(s){root.innerHTML=`<h2>Modifica stato</h2><label>Nome<input id="state-name" maxlength="40" value="${esc(s.name)}"></label><label>Output<input id="state-output" maxlength="40" placeholder="Facoltativo" value="${esc(outputOf(s))}"></label><label class="check"><input id="initial" type="checkbox" ${model.initial===s.id?'checked':''}> Stato iniziale</label><label class="check"><input id="final" type="checkbox" ${s.final?'checked':''}> Stato finale</label><p class="helper">Un solo stato iniziale. Gli stati finali determinano quali sequenze sono accettate.</p><button id="delete" class="danger">Elimina stato</button>`;
+ bindOutput($('state-output'),s);labelKeys($('state-name'),s.name);$('state-name').onchange=ev=>{let v=ev.target.value.trim();if(!v){toast('Inserisci un nome per lo stato');renderProps();return;}checkpoint();s.name=v;commit()};$('initial').onchange=()=>{if(model.initial===s.id){toast('Scegli un altro stato come iniziale');renderProps();return}checkpoint();model.initial=s.id;commit()};$('final').onchange=ev=>{checkpoint();s.final=ev.target.checked;commit()};$('delete').onclick=deleteSelectedState;
+ }else if(e){const opts=id=>model.states.map(s=>`<option value="${esc(s.id)}" ${s.id===id?'selected':''}>${esc(s.name)}</option>`).join('');root.innerHTML=`<h2>Modifica transizione</h2><label>Da<select id="edge-from">${opts(e.from)}</select></label><label>A<select id="edge-to">${opts(e.to)}</select></label><label>Simbolo<input id="edge-symbol" maxlength="40" value="${esc(e.symbol)}"></label><label>Output<input id="edge-output" maxlength="40" placeholder="Facoltativo" value="${esc(outputOf(e))}"></label><p class="helper">Un simbolo per transizione, senza spazi o virgole. Per più simboli, aggiungi più transizioni.</p><button id="delete" class="danger">Elimina transizione</button>`;
+ bindOutput($('edge-output'),e);labelKeys($('edge-symbol'),e.symbol);for(let key of ['from','to','symbol'])$('edge-'+key).onchange=ev=>{let v=ev.target.value.trim();if(key==='symbol'&&(!v||/[\s,]/.test(v))){toast('Usa un simbolo senza spazi o virgole');renderProps();return;}checkpoint();e[key]=v;commit()};$('delete').onclick=()=>{checkpoint();model.edges=model.edges.filter(x=>x.id!==e.id);selected=null;commit()};
  }else root.innerHTML='<h2>Il tuo modello</h2><p class="helper">Seleziona uno stato o una transizione nel diagramma per modificarne le proprietà.</p><button id="new-state" style="width:100%;margin-top:12px">＋ Aggiungi stato</button><button id="new-edge" style="width:100%;margin-top:8px">↗ Aggiungi transizione</button>';
  if($('new-state'))$('new-state').onclick=()=>addState();if($('new-edge'))$('new-edge').onclick=beginConnection;
 }
@@ -178,7 +184,7 @@ function renderAll(redraw=true){
  $('title').value=model.title;$('state-count').textContent=model.states.length;$('edge-count').textContent=model.edges.length;
  $('states').innerHTML=model.states.map(s=>`<div class="list-row ${selected?.id===s.id?'selected':''}" data-state="${esc(s.id)}"><i class="state-icon ${s.final?'final':''}"></i><span>${esc(s.name)}</span><small>${model.initial===s.id?'iniziale':s.final?'finale':''}</small></div>`).join('');
  document.querySelectorAll('[data-state]').forEach(el=>el.onclick=()=>{selected={kind:'state',id:el.dataset.state};renderAll();$('graph').focus()});
- const name=id=>model.states.find(s=>s.id===id)?.name||'?';$('edges').innerHTML=model.edges.map(e=>`<div class="list-row edge-row ${selected?.id===e.id?'selected':''}" data-edge="${esc(e.id)}"><svg class="route-swatch" width="24" height="10" aria-hidden="true"><path d="M 0 5 L 24 5" stroke="${routeStyle(e).color}" stroke-width="3" stroke-dasharray="${routeStyle(e).dash}"/></svg><span>${esc(name(e.from))} → ${esc(name(e.to))}</span><b>${esc(e.symbol)}</b></div>`).join('');document.querySelectorAll('[data-edge]').forEach(el=>el.onclick=()=>{selected={kind:'edge',id:el.dataset.edge};renderAll()});
+ const name=id=>model.states.find(s=>s.id===id)?.name||'?';$('edges').innerHTML=model.edges.map(e=>`<div class="list-row edge-row ${selected?.id===e.id?'selected':''}" data-edge="${esc(e.id)}"><svg class="route-swatch" width="24" height="10" aria-hidden="true"><path d="M 0 5 L 24 5" stroke="${routeStyle(e).color}" stroke-width="3" stroke-dasharray="${routeStyle(e).dash}"/></svg><span>${esc(name(e.from))} → ${esc(name(e.to))}</span><b>${esc(edgeLabel(e))}</b></div>`).join('');document.querySelectorAll('[data-edge]').forEach(el=>el.onclick=()=>{selected={kind:'edge',id:el.dataset.edge};renderAll()});
  let problems=issues();$('validation').innerHTML=problems.length?problems.map(p=>`<p class="invalid">⚠ ${esc(p)}</p>`).join(''):`<p class="valid">✓ Nessuna transizione ambigua</p><p class="helper">${model.states.filter(s=>s.final).length} stati finali · ${symbols().length} simboli<br>Le transizioni mancanti rifiutano l’input.</p>`;
  $('undo').disabled=!history.length;$('redo').disabled=!future.length;$('select-tool').classList.toggle('active',mode==='select');$('connect-tool').classList.toggle('active',mode==='connect');$('hint').textContent=mode==='connect'?(connectFrom?'Ora clicca sullo stato di destinazione':'Clicca sullo stato di partenza, poi sulla destinazione'):'Rotellina per zoom · Trascina lo sfondo per spostare · Doppio clic per rinominare';
  renderProps();renderSim();if(redraw)draw();
@@ -188,10 +194,11 @@ function renderAll(redraw=true){
 function renderSim(){let done=sim.started&&sim.index>=sim.tokens.length,accept=done&&!sim.blocked&&model.states.find(s=>s.id===sim.current)?.final;
  $('status').textContent=sim.blocked?'Input rifiutato':done?(accept?'Sequenza accettata':'Stato non finale'):sim.started?'In esecuzione':'Pronto';$('status').className='status '+(sim.blocked||done&&!accept?'reject':accept?'accept':'');$('current').textContent='Stato: '+(model.states.find(s=>s.id===sim.current)?.name||'—');
  $('tokens').innerHTML=sim.tokens.map((t,i)=>`<span class="token ${i<sim.index?'done':i===sim.index?'next':''}">${esc(t)}</span>`).join('');$('trace').innerHTML=sim.trace.length?sim.trace.map(esc).join('<br>'):'I simboli sono separati da spazi o virgole.';
+ $('sim-output').textContent='Output: '+(sim.outputs.length?sim.outputs.join(' → '):'—');
  $('symbol-buttons').innerHTML=symbols().map(s=>`<button data-symbol="${esc(s)}">＋ ${esc(s)}</button>`).join('');document.querySelectorAll('[data-symbol]').forEach(b=>b.onclick=()=>{$('sequence').value=($('sequence').value.trim()+' '+b.dataset.symbol).trim();reset()});
 }
-function step(){if(issues().length){stop();toast('Risolvi le transizioni ambigue prima di eseguire');return}if(sim.blocked||sim.started&&sim.index>=sim.tokens.length){stop();return}sim.started=true;if(!sim.tokens.length){stop();renderAll();return}let symbol=sim.tokens[sim.index],edge=model.edges.find(e=>e.from===sim.current&&e.symbol===symbol),name=id=>model.states.find(s=>s.id===id).name;
- if(!edge){sim.trace.push(`Nessuna transizione da ${name(sim.current)} con «${symbol}». Sequenza rifiutata.`);sim.blocked=true;stop()}else{sim.trace.push(`${name(edge.from)} — ${symbol} → ${name(edge.to)}`);sim.current=edge.to;sim.index++;if(sim.index===sim.tokens.length)stop()}renderAll();}
+function step(){if(issues().length){stop();toast('Risolvi le transizioni ambigue prima di eseguire');return}if(sim.blocked||sim.started&&sim.index>=sim.tokens.length){stop();return}if(!sim.started){const initial=model.states.find(s=>s.id===sim.current);if(outputOf(initial))sim.outputs.push(outputOf(initial));}sim.started=true;if(!sim.tokens.length){stop();renderAll();return}let symbol=sim.tokens[sim.index],edge=model.edges.find(e=>e.from===sim.current&&e.symbol===symbol),name=id=>model.states.find(s=>s.id===id).name;
+ if(!edge){sim.trace.push(`Nessuna transizione da ${name(sim.current)} con «${symbol}». Sequenza rifiutata.`);sim.blocked=true;stop()}else{const dest=model.states.find(s=>s.id===edge.to);if(outputOf(edge))sim.outputs.push(outputOf(edge));if(outputOf(dest))sim.outputs.push(outputOf(dest));sim.trace.push(`${name(edge.from)} — ${edgeLabel(edge)} → ${name(edge.to)}${outputOf(dest)?' [output stato: '+outputOf(dest)+']':''}`);sim.current=edge.to;sim.index++;if(sim.index===sim.tokens.length)stop()}renderAll();}
 $('title').onchange=e=>{checkpoint();model.title=e.target.value.trim()||'Il mio automa';save();renderAll()};$('sequence').oninput=()=>reset();$('reset').onclick=()=>reset();$('step').onclick=step;
 $('run').onclick=()=>{if(timer){stop();return}if(sim.blocked||sim.started&&sim.index>=sim.tokens.length)reset(false);step();if(!sim.blocked&&sim.index<sim.tokens.length&&!issues().length){timer=setInterval(step,750);$('run').textContent='Ⅱ Pausa'}};
 $('example').onchange=e=>{checkpoint();model=example(e.target.value);selected=null;mode='select';connectFrom=null;$('sequence').value=e.target.value==='binary'?'1 0 1':e.target.value==='traffic'?'timer timer timer':e.target.value==='empty'?'':'seleziona 20 20 10';commit();fit()};
