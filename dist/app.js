@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let model,selected=null,mode='select',connectFrom=null,history=[],future=[],timer=null,drag=null;
+let model,selected=null,mode='select',connectFrom=null,history=[],future=[],timer=null,drag=null,inlineEditor=null;
 let sim={current:null,index:0,tokens:[],trace:[],blocked:false,started:false};
 const state=(id,name,x,y,final=false)=>({id,name,x,y,final});
 function example(type){
@@ -26,30 +26,44 @@ function commit(){if(validViewport(model.viewport))setView(model.viewport,false)
 function symbols(){return [...new Set(model.edges.map(e=>e.symbol))].sort()}
 function issues(){let seen=new Set(),out=[];for(let e of model.edges){let k=JSON.stringify([e.from,e.symbol]);if(seen.has(k))out.push('Più transizioni per «'+e.symbol+'» da '+model.states.find(s=>s.id===e.from).name);seen.add(k)}return [...new Set(out)]}
 function node(tag,attrs,parent){let n=document.createElementNS(NS,tag);for(let [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(parent)parent.append(n);return n;}
-function bounds(){let xs=model.states.map(s=>s.x),ys=model.states.map(s=>s.y);return {x:Math.min(...xs)-110,y:Math.min(...ys)-130,w:Math.max(...xs)-Math.min(...xs)+220,h:Math.max(...ys)-Math.min(...ys)+240}}
+function bounds(){
+ // Include curved parallel edges and labels when fitting or exporting.
+ const box=$('graph').getBBox();
+ if(box.width>0&&box.height>0)return {x:box.x-65,y:box.y-65,w:box.width+130,h:box.height+130};
+ const xs=model.states.map(s=>s.x),ys=model.states.map(s=>s.y);
+ return {x:Math.min(...xs)-110,y:Math.min(...ys)-130,w:Math.max(...xs)-Math.min(...xs)+220,h:Math.max(...ys)-Math.min(...ys)+240};
+}
+const routeColors=['#237658','#4169b1','#b45178','#bb7d26','#7856a5','#16838b','#c2543f','#697936'];
+const routePatterns=['','9 4','3 4','10 3 2 3','13 4 4 4','2 3 2 3 8 3'];
+function routeStyle(edge){
+ if(!Number.isInteger(edge.styleIndex)||edge.styleIndex<0||edge.styleIndex>=48)edge.styleIndex=model.edges.findIndex(item=>item.id===edge.id)%48;
+ const index=edge.styleIndex;
+ return {color:routeColors[index%routeColors.length],dash:routePatterns[(index+Math.floor(index/routeColors.length))%routePatterns.length],marker:'route-arrow-'+index%routeColors.length};
+}
 function draw(target=$('graph'),exporting=false){
- target.replaceChildren();let defs=node('defs',{},target);for(let [id,color]of [['arrow','#86998b'],['hot','#c08b3d']]){let mark=node('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);node('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:color},mark)}
- const map=Object.fromEntries(model.states.map(s=>[s.id,s]));let grouped=[];for(let e of model.edges){let g=grouped.find(g=>g.from===e.from&&g.to===e.to);if(g)g.edges.push(e);else grouped.push({from:e.from,to:e.to,edges:[e]})}
- for(let g of grouped){let a=map[g.from],b=map[g.to],d,lx,ly;
- if(a===b){d=`M ${a.x-22} ${a.y-32} C ${a.x-85} ${a.y-130}, ${a.x+85} ${a.y-130}, ${a.x+22} ${a.y-32}`;lx=a.x;ly=a.y-105}
- else{let dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,ux=dx/len,uy=dy/len;let reverse=model.edges.some(e=>e.from===b.id&&e.to===a.id);let bend=reverse?55:0;let cx=(a.x+b.x)/2-uy*bend,cy=(a.y+b.y)/2+ux*bend;
+ target.replaceChildren();let defs=node('defs',{},target);for(let [id,color]of [['arrow','#86998b'],['hot','#c08b3d'],...routeColors.map((color,i)=>['route-arrow-'+i,color])]){let mark=node('marker',{id,viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);node('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:color},mark)}
+ const map=Object.fromEntries(model.states.map(s=>[s.id,s]));let grouped=model.edges.map(e=>({from:e.from,to:e.to,edges:[e]}));
+ for(let g of grouped){let a=map[g.from],b=map[g.to],d,lx,ly;const route=routeStyle(g.edges[0]),siblings=model.edges.filter(e=>e.from===g.from&&e.to===g.to),lane=siblings.findIndex(e=>e.id===g.edges[0].id);const offset=(lane-(siblings.length-1)/2)*55;
+ if(a===b){const lift=130+lane*42;d=`M ${a.x-22} ${a.y-32} C ${a.x-85} ${a.y-lift}, ${a.x+85} ${a.y-lift}, ${a.x+22} ${a.y-32}`;lx=a.x;ly=a.y-105-lane*32}
+ else{let dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,ux=dx/len,uy=dy/len;let reverse=model.edges.some(e=>e.from===b.id&&e.to===a.id);let bend=(reverse?65:0)+offset;let cx=(a.x+b.x)/2-uy*bend,cy=(a.y+b.y)/2+ux*bend;
  // Separate straight skip edges in the vending example.
  if(!reverse&&Math.abs(dx)>300){cy-=70;}
  let startAngle=Math.atan2(cy-a.y,cx-a.x),endAngle=Math.atan2(b.y-cy,b.x-cx);d=`M ${a.x+Math.cos(startAngle)*40} ${a.y+Math.sin(startAngle)*40} Q ${cx} ${cy} ${b.x-Math.cos(endAngle)*45} ${b.y-Math.sin(endAngle)*45}`;lx=.25*a.x+.5*cx+.25*b.x;ly=.25*a.y+.5*cy+.25*b.y-9;}
- let sel=selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id),group=node('g',{'class':'graph-edge','data-edges':JSON.stringify(g.edges.map(e=>e.id))},target);node('path',{d,fill:'none',stroke:sel&&!exporting?'#237658':'#86998b','stroke-width':sel&&!exporting?2.5:1.7,'marker-end':'url(#arrow)'},group);node('path',{d,fill:'none',stroke:'transparent','stroke-width':18},group);
- let label=g.edges.map(e=>e.symbol).join(', '),width=label.length*7+14;node('rect',{x:lx-width/2,y:ly-14,width,height:21,rx:5,fill:'#fcfdf9',stroke:'#e3e9df'},group);let text=node('text',{x:lx,y:ly+1,'text-anchor':'middle','font-size':12,'font-family':'Arial,sans-serif',fill:'#536b59'},group);text.textContent=label;
+ let sel=selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id),group=node('g',{'class':'graph-edge','data-edges':JSON.stringify(g.edges.map(e=>e.id)),'data-label-x':lx,'data-label-y':ly},target);node('path',{d,fill:'none',stroke:route.color,'stroke-dasharray':route.dash,'stroke-width':sel&&!exporting?3.5:2.2,'marker-end':'url(#'+route.marker+')'},group);node('path',{d,fill:'none',stroke:'transparent','stroke-width':18},group);
+ let label=g.edges.map(e=>e.symbol).join(', '),width=label.length*7+14;node('rect',{x:lx-width/2,y:ly-14,width,height:21,rx:5,fill:'#fcfdf9',stroke:'#e3e9df'},group);let text=node('text',{x:lx,y:ly+1,'text-anchor':'middle','font-size':12,'font-family':'Arial,sans-serif',fill:route.color},group);text.textContent=label;
  if(!exporting){group.addEventListener('click',()=>{selected={kind:'edge',id:selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id)?selected.id:g.edges[0].id};renderAll(false)});group.addEventListener('dblclick',event=>{event.stopPropagation();editLabel('edge',selected?.kind==='edge'&&g.edges.some(e=>e.id===selected.id)?selected.id:g.edges[0].id)});}}
- for(let s of model.states){let active=!exporting&&sim.started&&sim.current===s.id,sel=!exporting&&selected?.kind==='state'&&selected.id===s.id,group=node('g',{'class':'graph-state','data-id':s.id,role:'button',tabindex:exporting?-1:0,'aria-label':s.name},target);
+ for(let s of model.states){let active=!exporting&&mode!=='connect'&&sim.started&&sim.current===s.id,sel=!exporting&&mode==='select'&&selected?.kind==='state'&&selected.id===s.id,group=node('g',{'class':'graph-state','data-id':s.id,role:'button',tabindex:exporting?-1:0,'aria-label':s.name},target);
  if(s.id===model.initial){node('path',{d:`M ${s.x-87} ${s.y} L ${s.x-44} ${s.y}`,stroke:'#829a83','stroke-width':2,'marker-end':'url(#arrow)'},group);let text=node('text',{x:s.x-82,y:s.y-11,'font-size':9,'font-family':'Arial,sans-serif',fill:'#829a83'},group);text.textContent='inizio'}
- if(sel||active)node('circle',{cx:s.x,cy:s.y,r:48,fill:active?'#fff2d8':'#e9f0e4',stroke:active?'#e8d0a1':'#c4d6bd','stroke-width':1},group);
+ if(active)node('circle',{cx:s.x,cy:s.y,r:48,fill:active?'#fff2d8':'#e9f0e4',stroke:active?'#e8d0a1':'#c4d6bd','stroke-width':1},group);
+ if(!exporting&&mode==='connect'&&connectFrom===s.id)node('circle',{'data-connection-source':'true',cx:s.x,cy:s.y,r:45,fill:'none',stroke:'#237658','stroke-width':2},group);
  node('circle',{cx:s.x,cy:s.y,r:39,fill:active?'#f4dfb4':s.final?'#e0ecda':'#f2f6ee',stroke:active?'#c8994d':'#6c8c73','stroke-width':2},group);if(s.final)node('circle',{cx:s.x,cy:s.y,r:33,fill:'none',stroke:'#6c8c73','stroke-width':1.5},group);
  let text=node('text',{x:s.x,y:s.y+5,'text-anchor':'middle','font-size':s.name.length>10?11:14,'font-family':'Arial,sans-serif','font-weight':500,fill:'#304d38'},group);text.textContent=s.name.length>17?s.name.slice(0,16)+'…':s.name;node('title',{},group).textContent=s.name;
- if(!exporting){group.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(mode==='connect'){if(!connectFrom){connectFrom=s.id;$('hint').textContent='Ora clicca sullo stato di destinazione';}else{addEdge(connectFrom,s.id);connectFrom=null;mode='select';renderAll()}return;}selected={kind:'state',id:s.id};let p=point(e);drag={kind:'node',id:s.id,dx:p.x-s.x,dy:p.y-s.y,startX:e.clientX,startY:e.clientY,before:clone(),moved:false};renderAll(false)});group.addEventListener('dblclick',event=>{event.stopPropagation();editLabel('state',s.id)});group.addEventListener('keydown',e=>{if(e.key==='Enter'){selected={kind:'state',id:s.id};renderAll()}})} }
+ if(!exporting){group.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();if(mode==='connect'){if(!connectFrom){connectFrom=s.id;selected={kind:'state',id:s.id};renderAll();}else{const from=connectFrom;connectFrom=null;mode='select';addEdge(from,s.id);}return;}selected={kind:'state',id:s.id};let p=point(e);drag={kind:'node',id:s.id,dx:p.x-s.x,dy:p.y-s.y,startX:e.clientX,startY:e.clientY,before:clone(),moved:false};renderAll(false)});group.addEventListener('dblclick',event=>{event.stopPropagation();editLabel('state',s.id)});group.addEventListener('keydown',e=>{if(e.key==='Enter'){selected={kind:'state',id:s.id};renderAll()}})} }
 }
 function point(e){return new DOMPoint(e.clientX,e.clientY).matrixTransform($('graph').getScreenCTM().inverse())}
 $('graph').addEventListener('pointerdown',e=>{
  if(e.button!==0||mode!=='select'||e.target.closest('.graph-state, .graph-edge'))return;
- const p=point(e);drag={kind:'pan',startX:e.clientX,startY:e.clientY,origin:p,view:{...model.viewport},matrix:$('graph').getScreenCTM().inverse(),moved:false};
+ const p=point(e);drag={kind:'pan',before:clone(),startX:e.clientX,startY:e.clientY,origin:p,view:{...model.viewport},matrix:$('graph').getScreenCTM().inverse(),moved:false};
  e.preventDefault();
 });
 $('graph').addEventListener('pointermove',e=>{
@@ -69,7 +83,7 @@ $('graph').addEventListener('pointermove',e=>{
 $('graph').addEventListener('pointerup',()=>{
  if(!drag)return;
  const moved=drag.moved;
- if(drag.kind==='node'&&moved){history.push(drag.before);future=[];}
+ if(moved){history.push(drag.before);if(history.length>60)history.shift();future=[];}
  if(moved)save();drag=null;$('graph').classList.remove('panning');renderAll(moved);
 });
 $('graph').addEventListener('pointercancel',()=>{
@@ -79,13 +93,73 @@ $('graph').addEventListener('pointercancel',()=>{
 });
 window.addEventListener('pagehide',save);
 $('graph').addEventListener('dblclick',e=>{if(e.target===$('graph')){let p=point(e);addState(p.x,p.y)}});
-function addState(x=480,y=300){checkpoint();let id='q'+Date.now(),name='q'+model.states.length;model.states.push(state(id,name,x,y));selected={kind:'state',id};commit()}
-function addEdge(from=model.states[0].id,to=model.states[0].id){checkpoint();let symbol='evento',i=2;while(model.edges.some(e=>e.from===from&&e.symbol===symbol))symbol='evento'+i++;let id='e'+Date.now();model.edges.push({id,from,to,symbol});selected={kind:'edge',id};commit()}
-function editLabel(kind,id){
- stop();mode='select';connectFrom=null;selected={kind,id};renderAll(false);
- const input=$(kind==='state'?'state-name':'edge-symbol');
- if(input){input.focus();input.select();}
+function addState(x,y){
+ if(!finishInlineEditor(true))return;
+ mode='select';connectFrom=null;checkpoint();
+ const v=model.viewport,id='q'+Date.now(),name='q'+model.states.length;
+ model.states.push(state(id,name,x??v.x+v.w/2,y??v.y+v.h/2));
+ selected={kind:'state',id};commit();editLabel('state',id,true);
 }
+function addEdge(from,to){
+ checkpoint();let symbol='evento',i=2;
+ while(model.edges.some(e=>e.from===from&&e.symbol===symbol))symbol='evento'+i++;
+ const id='e'+Date.now(),used=new Set(model.edges.map(edge=>edge.styleIndex));let styleIndex=0;while(used.has(styleIndex)&&styleIndex<48)styleIndex++;model.edges.push({id,from,to,symbol,styleIndex:styleIndex%48});
+ selected={kind:'edge',id};commit();editLabel('edge',id,true);
+}
+function beginConnection(){
+ if(!finishInlineEditor(true))return;
+ stop();mode='connect';connectFrom=null;selected=null;drag=null;renderAll();
+ $('graph').focus();
+}
+function editLabel(kind,id,created=false){
+ if(!finishInlineEditor(true))return;
+ stop();mode='select';connectFrom=null;selected={kind,id};renderAll(false);
+ const item=(kind==='state'?model.states:model.edges).find(item=>item.id===id);
+ if(!item)return;
+ const wrap=document.createElement('div');wrap.className='inline-editor';
+ const input=document.createElement('input');input.id='inline-name';input.maxLength=40;
+ input.setAttribute('aria-label',kind==='state'?'Nome dello stato sul grafo':'Simbolo del collegamento sul grafo');
+ input.value=kind==='state'?item.name:item.symbol;input.autocomplete='off';
+ const help=document.createElement('small');help.textContent='Invio salva · Esc annulla';
+ wrap.append(input,help);$('graph').parentElement.append(wrap);
+ inlineEditor={kind,id,created,wrap,input,original:input.value};positionInlineEditor();
+ input.addEventListener('keydown',event=>{
+  if(event.key==='Enter'){event.preventDefault();event.stopPropagation();finishInlineEditor(true);}
+  if(event.key==='Escape'){event.preventDefault();event.stopPropagation();finishInlineEditor(false);}
+ });
+ input.focus();input.select();
+}
+function positionInlineEditor(){
+ if(!inlineEditor)return;
+ const {kind,id,wrap}=inlineEditor;let x,y;
+ if(kind==='state'){const item=model.states.find(item=>item.id===id);if(!item)return;x=item.x;y=item.y;}
+ else{const group=[...$('graph').querySelectorAll('.graph-edge')].find(group=>JSON.parse(group.dataset.edges).includes(id));if(!group)return;x=Number(group.dataset.labelX);y=Number(group.dataset.labelY);}
+ const point=new DOMPoint(x,y).matrixTransform($('graph').getScreenCTM()),box=$('graph').parentElement.getBoundingClientRect();
+ wrap.style.left=Math.max(94,Math.min(box.width-94,point.x-box.x))+'px';
+ wrap.style.top=Math.max(24,Math.min(box.height-54,point.y-box.y))+'px';
+}
+function finishInlineEditor(apply){
+ if(!inlineEditor)return true;
+ const editor=inlineEditor,item=(editor.kind==='state'?model.states:model.edges).find(item=>item.id===editor.id);
+ const value=editor.input.value.trim();
+ if(apply&&(!value||editor.kind==='edge'&&/[\s,]/.test(value))){
+  editor.input.setAttribute('aria-invalid','true');toast(editor.kind==='state'?'Inserisci un nome per lo stato':'Usa un simbolo senza spazi o virgole');editor.input.focus();return false;
+ }
+ inlineEditor=null;editor.wrap.remove();
+ if(apply&&item&&value!==editor.original){
+  if(!editor.created)checkpoint();
+  if(editor.kind==='state')item.name=value;else item.symbol=value;
+  commit();
+ }
+ $('graph').focus();return true;
+}
+// Confirm an inline edit before actions outside its textbox.
+document.addEventListener('pointerdown',event=>{
+ if(inlineEditor&&!inlineEditor.wrap.contains(event.target)&&!finishInlineEditor(true)){
+  event.preventDefault();event.stopPropagation();
+ }
+},true);
+window.addEventListener('resize',positionInlineEditor);
 function labelKeys(input,original){
  input.addEventListener('keydown',event=>{
   if(event.key==='Enter'){event.preventDefault();input.blur();}
@@ -98,17 +172,18 @@ function renderProps(){let root=$('properties');let s=selected?.kind==='state'?m
  }else if(e){const opts=id=>model.states.map(s=>`<option value="${esc(s.id)}" ${s.id===id?'selected':''}>${esc(s.name)}</option>`).join('');root.innerHTML=`<h2>Modifica transizione</h2><label>Da<select id="edge-from">${opts(e.from)}</select></label><label>A<select id="edge-to">${opts(e.to)}</select></label><label>Simbolo<input id="edge-symbol" maxlength="40" value="${esc(e.symbol)}"></label><p class="helper">Un simbolo per transizione, senza spazi o virgole. Per più simboli, aggiungi più transizioni.</p><button id="delete" class="danger">Elimina transizione</button>`;
  labelKeys($('edge-symbol'),e.symbol);for(let key of ['from','to','symbol'])$('edge-'+key).onchange=ev=>{let v=ev.target.value.trim();if(key==='symbol'&&(!v||/[\s,]/.test(v))){toast('Usa un simbolo senza spazi o virgole');renderProps();return;}checkpoint();e[key]=v;commit()};$('delete').onclick=()=>{checkpoint();model.edges=model.edges.filter(x=>x.id!==e.id);selected=null;commit()};
  }else root.innerHTML='<h2>Il tuo modello</h2><p class="helper">Seleziona uno stato o una transizione nel diagramma per modificarne le proprietà.</p><button id="new-state" style="width:100%;margin-top:12px">＋ Aggiungi stato</button><button id="new-edge" style="width:100%;margin-top:8px">↗ Aggiungi transizione</button>';
- if($('new-state'))$('new-state').onclick=()=>addState();if($('new-edge'))$('new-edge').onclick=()=>addEdge();
+ if($('new-state'))$('new-state').onclick=()=>addState();if($('new-edge'))$('new-edge').onclick=beginConnection;
 }
 function renderAll(redraw=true){
  $('title').value=model.title;$('state-count').textContent=model.states.length;$('edge-count').textContent=model.edges.length;
  $('states').innerHTML=model.states.map(s=>`<div class="list-row ${selected?.id===s.id?'selected':''}" data-state="${esc(s.id)}"><i class="state-icon ${s.final?'final':''}"></i><span>${esc(s.name)}</span><small>${model.initial===s.id?'iniziale':s.final?'finale':''}</small></div>`).join('');
  document.querySelectorAll('[data-state]').forEach(el=>el.onclick=()=>{selected={kind:'state',id:el.dataset.state};renderAll()});
- const name=id=>model.states.find(s=>s.id===id)?.name||'?';$('edges').innerHTML=model.edges.map(e=>`<div class="list-row edge-row ${selected?.id===e.id?'selected':''}" data-edge="${esc(e.id)}"><span>${esc(name(e.from))} → ${esc(name(e.to))}</span><b>${esc(e.symbol)}</b></div>`).join('');document.querySelectorAll('[data-edge]').forEach(el=>el.onclick=()=>{selected={kind:'edge',id:el.dataset.edge};renderAll()});
+ const name=id=>model.states.find(s=>s.id===id)?.name||'?';$('edges').innerHTML=model.edges.map(e=>`<div class="list-row edge-row ${selected?.id===e.id?'selected':''}" data-edge="${esc(e.id)}"><svg class="route-swatch" width="24" height="10" aria-hidden="true"><path d="M 0 5 L 24 5" stroke="${routeStyle(e).color}" stroke-width="3" stroke-dasharray="${routeStyle(e).dash}"/></svg><span>${esc(name(e.from))} → ${esc(name(e.to))}</span><b>${esc(e.symbol)}</b></div>`).join('');document.querySelectorAll('[data-edge]').forEach(el=>el.onclick=()=>{selected={kind:'edge',id:el.dataset.edge};renderAll()});
  let problems=issues();$('validation').innerHTML=problems.length?problems.map(p=>`<p class="invalid">⚠ ${esc(p)}</p>`).join(''):`<p class="valid">✓ Nessuna transizione ambigua</p><p class="helper">${model.states.filter(s=>s.final).length} stati finali · ${symbols().length} simboli<br>Le transizioni mancanti rifiutano l’input.</p>`;
- $('undo').disabled=!history.length;$('redo').disabled=!future.length;$('select-tool').classList.toggle('active',mode==='select');$('connect-tool').classList.toggle('active',mode==='connect');if(!connectFrom)$('hint').textContent=mode==='connect'?'Clicca sullo stato di partenza, poi sulla destinazione':'Rotellina per zoom · Trascina lo sfondo per spostare · Doppio clic per rinominare';
+ $('undo').disabled=!history.length;$('redo').disabled=!future.length;$('select-tool').classList.toggle('active',mode==='select');$('connect-tool').classList.toggle('active',mode==='connect');$('hint').textContent=mode==='connect'?(connectFrom?'Ora clicca sullo stato di destinazione':'Clicca sullo stato di partenza, poi sulla destinazione'):'Rotellina per zoom · Trascina lo sfondo per spostare · Doppio clic per rinominare';
  renderProps();renderSim();if(redraw)draw();
- for(const group of $('graph').querySelectorAll('.graph-state, .graph-edge')){let match=selected?.kind==='state'?group.dataset.id===selected.id:selected?.kind==='edge'&&JSON.parse(group.dataset.edges||'[]').includes(selected.id);group.classList.toggle('is-selected',!!match);}
+ for(const group of $('graph').querySelectorAll('.graph-state, .graph-edge')){let match=mode==='select'&&selected?.kind==='state'?group.dataset.id===selected.id:selected?.kind==='edge'&&JSON.parse(group.dataset.edges||'[]').includes(selected.id);group.classList.toggle('is-selected',mode==='select'&&!!match);}
+ positionInlineEditor();
 }
 function renderSim(){let done=sim.started&&sim.index>=sim.tokens.length,accept=done&&!sim.blocked&&model.states.find(s=>s.id===sim.current)?.final;
  $('status').textContent=sim.blocked?'Input rifiutato':done?(accept?'Sequenza accettata':'Stato non finale'):sim.started?'In esecuzione':'Pronto';$('status').className='status '+(sim.blocked||done&&!accept?'reject':accept?'accept':'');$('current').textContent='Stato: '+(model.states.find(s=>s.id===sim.current)?.name||'—');
@@ -120,13 +195,24 @@ function step(){if(issues().length){stop();toast('Risolvi le transizioni ambigue
 $('title').onchange=e=>{checkpoint();model.title=e.target.value.trim()||'Il mio automa';save();renderAll()};$('sequence').oninput=()=>reset();$('reset').onclick=()=>reset();$('step').onclick=step;
 $('run').onclick=()=>{if(timer){stop();return}if(sim.blocked||sim.started&&sim.index>=sim.tokens.length)reset(false);step();if(!sim.blocked&&sim.index<sim.tokens.length&&!issues().length){timer=setInterval(step,750);$('run').textContent='Ⅱ Pausa'}};
 $('example').onchange=e=>{checkpoint();model=example(e.target.value);selected=null;mode='select';connectFrom=null;$('sequence').value=e.target.value==='binary'?'1 0 1':e.target.value==='traffic'?'timer timer timer':e.target.value==='empty'?'':'seleziona 20 20 10';commit();fit()};
-$('add-state').onclick=$('canvas-add').onclick=()=>addState();$('add-edge').onclick=()=>addEdge();$('select-tool').onclick=()=>{mode='select';connectFrom=null;renderAll()};$('connect-tool').onclick=()=>{mode='connect';connectFrom=null;renderAll()};
-$('undo').onclick=()=>{if(!history.length)return;future.push(clone());model=JSON.parse(history.pop());selected=null;commit()};$('redo').onclick=()=>{if(!future.length)return;history.push(clone());model=JSON.parse(future.pop());selected=null;commit()};
+$('add-state').onclick=$('canvas-add').onclick=()=>addState();$('add-edge').onclick=beginConnection;$('select-tool').onclick=()=>{mode='select';connectFrom=null;renderAll()};$('connect-tool').onclick=beginConnection;
+function undo(){finishInlineEditor(false);if(!history.length)return;future.push(clone());model=JSON.parse(history.pop());selected=null;connectFrom=null;mode='select';commit();}
+function redo(){finishInlineEditor(false);if(!future.length)return;history.push(clone());model=JSON.parse(future.pop());selected=null;connectFrom=null;mode='select';commit();}
+$('undo').onclick=undo;$('redo').onclick=redo;
+document.addEventListener('keydown',event=>{
+ if(event.isComposing||event.target.closest('input,textarea,select,[contenteditable="true"]'))return;
+ const key=event.key.toLowerCase();
+ if((event.ctrlKey||event.metaKey)&&key==='z'){event.preventDefault();event.shiftKey?redo():undo();return;}
+ if(event.ctrlKey||event.metaKey||event.altKey||event.repeat)return;
+ if(key==='s'){event.preventDefault();addState();}
+ if(key==='c'){event.preventDefault();beginConnection();}
+ if(key==='escape'){mode='select';connectFrom=null;selected=null;renderAll();}
+});
 function setView(view,persist=true){
  if(!validViewport(view))return;
  model.viewport={...view};$('graph').setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
  $('zoom-level').textContent=Math.round(100000/view.w)+'%';
- if(persist)save();
+ if(persist)save();positionInlineEditor();
 }
 function zoom(factor,anchor){
  if(drag)return;
@@ -150,4 +236,4 @@ function filename(){return model.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').
 $('download-json').onclick=()=>download(new Blob([JSON.stringify(model,null,2)],{type:'application/json'}),filename()+'.json');$('import').onclick=()=>$('file').click();
 $('file').onchange=async e=>{let f=e.target.files[0];if(!f)return;try{if(f.size>1000000)throw Error();let m=JSON.parse(await f.text());if(!validModel(m))throw Error();checkpoint();model=m;selected=null;commit();if(validViewport(model.viewport))setView(model.viewport);else fit();toast('Automa importato')}catch{toast('JSON non valido: verifica stati, coordinate, simboli e transizioni')}$('file').value=''};
 $('png').onclick=async()=>{try{let svg=document.createElementNS(NS,'svg'),b=bounds();svg.setAttribute('xmlns',NS);svg.setAttribute('viewBox',`${b.x} ${b.y} ${b.w} ${b.h}`);svg.setAttribute('width',b.w);svg.setAttribute('height',b.h);draw(svg,true);let data=new XMLSerializer().serializeToString(svg),url=URL.createObjectURL(new Blob([data],{type:'image/svg+xml'})),img=new Image();try{await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=url});let scale=Math.min(2,4096/Math.max(b.w,b.h)),canvas=document.createElement('canvas');canvas.width=Math.ceil(b.w*scale);canvas.height=Math.ceil(b.h*scale);let ctx=canvas.getContext('2d');ctx.fillStyle='#fcfdf9';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);let blob=await new Promise(r=>canvas.toBlob(r,'image/png'));if(!blob)throw Error();download(blob,filename()+'.png');toast('PNG esportato')}finally{URL.revokeObjectURL(url)}}catch{toast('Esportazione non riuscita. Riprova.')}};
-reset(false);renderAll();if(validViewport(model.viewport))setView(model.viewport,false);else fit();
+reset(false);renderAll();if(validViewport(model.viewport))setView(model.viewport,false);else fit();save();

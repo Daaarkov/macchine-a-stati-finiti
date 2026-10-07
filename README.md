@@ -5,7 +5,9 @@ Editor visuale in italiano per automi a stati finiti deterministici. Applicazion
 ## Funzioni
 
 - Creazione, modifica e trascinamento di stati e transizioni.
-- Doppio clic su nodi e archi per rinominare; Invio conferma, Esc annulla.
+- Colori e tratteggi per distinguere gli archi, anche nel PNG; archi paralleli separati.
+- Textbox sul grafo alla creazione e al doppio clic su nodi e archi; Invio conferma, Esc annulla.
+- Scorciatoie S (nuovo stato), C (collega due nodi), Ctrl+Z / Cmd+Z (annulla) e Ctrl+Shift+Z / Cmd+Shift+Z (ripeti). Le scorciatoie del grafo non interferiscono con la digitazione nelle textbox.
 - Zoom con rotellina e pulsanti, spostamento della vista trascinando lo sfondo.
 - Salvataggio automatico nel browser delle posizioni dei nodi e dell’inquadratura.
 - Simulazione passo per passo o automatica, con traccia e controllo delle ambiguità.
